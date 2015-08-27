@@ -29,6 +29,9 @@ var (
 	// name of s3 key prefix
 	key = flag.String("key", "", "S3 bucket key")
 
+	// aws region to use
+	region = flag.String("region", "", "AWS Region")
+
 	// username to authenticate
 	user = ""
 
@@ -39,6 +42,7 @@ var (
 Options:
  -bucket             S3 bucket name
  -key                S3 key prefix in bucket
+ -region             AWS Region
 
 The final S3 url will be: bucket/prefix/username
 `
@@ -64,6 +68,12 @@ func main() {
 		fmt.Println("Username is required")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	if *region != "" {
+		aws.DefaultConfig.Region = *region
+		fmt.Println("Setting region:", aws.DefaultConfig)
+		svc = s3.New(nil)
 	}
 
 	user = flag.Arg(0)
