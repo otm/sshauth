@@ -10,8 +10,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/defaults"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 const (
@@ -71,8 +73,8 @@ func main() {
 	}
 
 	if *region != "" {
-		aws.DefaultConfig.Region = *region
-		fmt.Println("Setting region:", aws.DefaultConfig)
+		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region)
+		fmt.Println("Setting region:", defaults.DefaultConfig)
 		svc = s3.New(nil)
 	}
 
@@ -89,11 +91,12 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 	}
 	resp, err := svc.GetObject(params)
 
-	if awserr := aws.Error(err); awserr != nil {
-		r <- bytes.NewReader([]byte(""))
-		printDbg("AWS Error(1):", awserr.Code, awserr.Message)
-		return
-	} else if err != nil {
+	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok {
+			r <- bytes.NewReader([]byte(""))
+			printDbg("AWS Error(1):", awsErr.Code, awsErr.Message)
+			return
+		}
 		r <- bytes.NewReader([]byte(""))
 		printDbg("Error:", err)
 	}
@@ -114,9 +117,10 @@ func printAuthorizedKeys(bucket, key, user string) {
 	}
 	resp, err := svc.ListObjects(params)
 
-	if awserr := aws.Error(err); awserr != nil {
-		log.Fatal("AWS Error(2):", awserr.Code, awserr.Message)
-	} else if err != nil {
+	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok {
+			log.Fatal("AWS Error(2):", awsErr.Code, awsErr.Message)
+		}
 		log.Fatal("Error:", err)
 	}
 
