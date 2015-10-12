@@ -1,0 +1,6 @@
+package: github.com/otm/sshauth
+import:
+  - package: github.com/vaughan0/go-ini
+    ref:     a98ad7ee00ec53921f08832bc06ecf7fd600e6a1
+  - package: github.com/aws/aws-sdk-go
+    ref:     7d9ac5f2079172b9725513796718eaad96218f3b
