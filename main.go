@@ -93,11 +93,11 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
-			r <- bytes.NewReader([]byte(""))
+			r <- bytes.NewReader([]byte{})
 			printDbg("AWS Error(1):", awsErr.Code, awsErr.Message)
 			return
 		}
-		r <- bytes.NewReader([]byte(""))
+		r <- bytes.NewReader([]byte{})
 		printDbg("Error:", err)
 	}
 
@@ -115,24 +115,27 @@ func printAuthorizedKeys(bucket, key, user string) {
 		Bucket: aws.String(bucket), // Required
 		Prefix: aws.String(key),
 	}
-	resp, err := svc.ListObjects(params)
+
+	err := svc.ListObjectsPages(params, func (resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
+		for _, content := range resp.Contents {
+			go readAuthorizedKey(bucket, *content.Key, keys)
+		}
+
+		for range resp.Contents {
+			_, err := io.Copy(os.Stdout, <-keys)
+			if err != nil {
+				log.Println("Unable to copy to stdout:", err)
+			}
+		}
+
+		return !lastPage
+	})
 
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
 			log.Fatal("AWS Error(2):", awsErr.Code, awsErr.Message)
 		}
 		log.Fatal("Error:", err)
-	}
-
-	for _, content := range resp.Contents {
-		go readAuthorizedKey(bucket, *content.Key, keys)
-	}
-
-	for range resp.Contents {
-		_, err = io.Copy(os.Stdout, <-keys)
-		if err != nil {
-			log.Println("Unable to copy to stdout:", err)
-		}
 	}
 }
 
