@@ -73,7 +73,7 @@ func main() {
 	}
 
 	if *region != "" {
-		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region)
+		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region).WithMaxRetries(10)
 		fmt.Println("Setting region:", defaults.DefaultConfig)
 		svc = s3.New(nil)
 	}
