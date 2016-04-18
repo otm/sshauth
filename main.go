@@ -91,7 +91,7 @@ func listenOnSigpipe() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGPIPE)
 	<- c
-	log.Println("Got SIGPIPE signal")
+	printDbg("Got SIGPIPE signal")
 }
 
 // readAuthorizedKey reads the authorized keys from S3
