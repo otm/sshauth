@@ -90,7 +90,7 @@ func main() {
 func listenOnSigpipe() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGPIPE)
-	<- c
+	<-c
 	printDbg("Got SIGPIPE signal")
 }
 
@@ -127,7 +127,7 @@ func printAuthorizedKeys(bucket, key, user string) {
 		Prefix: aws.String(key),
 	}
 
-	err := svc.ListObjectsPages(params, func (resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
+	err := svc.ListObjectsPages(params, func(resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
 		for _, content := range resp.Contents {
 			go readAuthorizedKey(bucket, *content.Key, keys)
 		}
