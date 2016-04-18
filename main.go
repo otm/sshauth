@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -80,7 +82,16 @@ func main() {
 
 	user = flag.Arg(0)
 
+	go listenOnSigpipe()
+
 	printAuthorizedKeys(*bucket, *key, user)
+}
+
+func listenOnSigpipe() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGPIPE)
+	<-c
+	printDbg("Got SIGPIPE signal")
 }
 
 // readAuthorizedKey reads the authorized keys from S3
@@ -116,7 +127,7 @@ func printAuthorizedKeys(bucket, key, user string) {
 		Prefix: aws.String(key),
 	}
 
-	err := svc.ListObjectsPages(params, func (resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
+	err := svc.ListObjectsPages(params, func(resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
 		for _, content := range resp.Contents {
 			go readAuthorizedKey(bucket, *content.Key, keys)
 		}
@@ -124,6 +135,10 @@ func printAuthorizedKeys(bucket, key, user string) {
 		for range resp.Contents {
 			_, err := io.Copy(os.Stdout, <-keys)
 			if err != nil {
+				if err == syscall.EPIPE {
+					// Expected error
+					return
+				}
 				log.Println("Unable to copy to stdout:", err)
 			}
 		}
