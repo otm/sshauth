@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 
@@ -18,12 +19,16 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
+//go:generate go run tools/include.go
+
 const (
 	// flagFileName is the configuration file used for sshauth
 	flagFileName = "/etc/sshauth/sshauth.conf"
 
 	// debug ("true"/"false") controls debug output
 	debug = "false"
+
+	logheader = "command=\"%s %s %s %s\" "
 )
 
 var (
@@ -36,6 +41,10 @@ var (
 	// aws region to use
 	region = flag.String("region", "", "AWS Region")
 
+	authlog = flag.String("authlog", "", "Path to sshlogger script")
+
+	printSSHLog = flag.Bool("sshlogger", false, "Output sshlogger script")
+
 	// username to authenticate
 	user = ""
 
@@ -47,6 +56,8 @@ Options:
  -bucket             S3 bucket name
  -key                S3 key prefix in bucket
  -region             AWS Region
+ -authlog            Log key file with syslog
+ -sshlogger          Install sshlogger for sysloging
 
 The final S3 url will be: bucket/prefix/username
 `
@@ -61,6 +72,11 @@ func init() {
 func main() {
 	readDefaultFlagFile()
 	flag.Parse()
+
+	if *printSSHLog {
+		fmt.Println(sshlogger)
+		os.Exit(0)
+	}
 
 	if *bucket == "" {
 		fmt.Println("S3 bucket is required.")
@@ -112,6 +128,13 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 		printDbg("Error:", err)
 	}
 
+	if *authlog != "" {
+		outbuf := bytes.NewBufferString(fmt.Sprintf(logheader, *authlog, path.Base(key), bucket, key))
+		outbuf.ReadFrom(resp.Body)
+		r <- outbuf
+		return
+	}
+
 	r <- resp.Body
 }
 
@@ -120,7 +143,7 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 func printAuthorizedKeys(bucket, key, user string) {
 	keys := make(chan io.Reader, 5)
 
-	key = strings.TrimSuffix(key, "/") + "/" + user
+	key = strings.TrimSuffix(key, "/") + "/" + user + "/"
 
 	params := &s3.ListObjectsInput{
 		Bucket: aws.String(bucket), // Required
@@ -129,6 +152,11 @@ func printAuthorizedKeys(bucket, key, user string) {
 
 	err := svc.ListObjectsPages(params, func(resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
 		for _, content := range resp.Contents {
+			// If it's a root key skip reading it
+			if *content.Key == key {
+				keys <- bytes.NewReader([]byte{})
+				continue
+			}
 			go readAuthorizedKey(bucket, *content.Key, keys)
 		}
 
@@ -137,7 +165,7 @@ func printAuthorizedKeys(bucket, key, user string) {
 			if err != nil {
 				if err == syscall.EPIPE {
 					// Expected error
-					return
+					return false
 				}
 				log.Println("Unable to copy to stdout:", err)
 			}
