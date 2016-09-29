@@ -92,7 +92,7 @@ func main() {
 
 	if *region != "" {
 		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region).WithMaxRetries(10)
-		printDbg("Setting region:", defaults.DefaultConfig)
+		printDbg("Setting region:", *region)
 		svc = s3.New(nil)
 	}
 
@@ -121,7 +121,7 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
 			r <- bytes.NewReader([]byte{})
-			printDbg("AWS Error(1):", awsErr.Code, awsErr.Message)
+			printDbgf("AWS Error(1): Code: %s, Message: %s", awsErr.Code(), awsErr.Message())
 			return
 		}
 		r <- bytes.NewReader([]byte{})
@@ -176,7 +176,7 @@ func printAuthorizedKeys(bucket, key, user string) {
 
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
-			log.Fatal("AWS Error(2):", awsErr.Code, awsErr.Message)
+			log.Fatalf("AWS Error(2): Code: %s, Message: %s", awsErr.Code(), awsErr.Message())
 		}
 		log.Fatal("Error:", err)
 	}
@@ -188,14 +188,14 @@ func readDefaultFlagFile() {
 }
 
 // readFlagFile will read a file containing command line flags.
-// These flags will be added before flags on the command line, therfore
+// These flags will be added before flags on the command line, therefor
 // those flags will override. Note, if flags are read into an array they
 // will not be overridden, but appended.
 func readFlagFile(flagFileName string) {
 	flagFile, err := os.Open(flagFileName)
 	if err != nil {
 		dir, _ := os.Getwd()
-		printDbg("Unable to open file: ", flagFileName, ", In folder:", dir)
+		printDbgf("Unable to open file: %s, In folder: %s", flagFileName, dir)
 		return
 	}
 	defer flagFile.Close()
@@ -218,6 +218,11 @@ func readFlagFile(flagFileName string) {
 	}
 
 	os.Args = newArgs
+}
+
+// printDbgf formats string and call printDbg
+func printDbgf(s string, p ...interface{}) {
+	printDbg(fmt.Sprintf(s, p...))
 }
 
 // printDbg prints debug messages
