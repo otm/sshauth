@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/syslog"
 	"os"
 	"os/signal"
 	"path"
@@ -26,7 +27,7 @@ const (
 	flagFileName = "/etc/sshauth/sshauth.conf"
 
 	// debug ("true"/"false") controls debug output
-	debug = "false"
+	debug = "False"
 
 	logheader = "command=\"%s %s %s %s\" "
 )
@@ -45,6 +46,8 @@ var (
 
 	printSSHLog = flag.Bool("sshlogger", false, "Output sshlogger script")
 
+	logger = flag.String("logger", "stdout", "Where to write logs")
+
 	// username to authenticate
 	user = ""
 
@@ -58,6 +61,7 @@ Options:
  -region             AWS Region
  -authlog            Log key file with syslog
  -sshlogger          Install sshlogger for sysloging
+ -logger             Target for logs, stdout or syslog
 
 The final S3 url will be: bucket/prefix/username
 `
@@ -65,27 +69,43 @@ The final S3 url will be: bucket/prefix/username
 
 func init() {
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, usage)
+		if *logger != "syslog" {
+			log.Fatal(usage)
+		}
 	}
 }
 
 func main() {
+	// Turn off timestamps for logs on stdout
+	log.SetFlags(0)
+
 	readDefaultFlagFile()
 	flag.Parse()
 
+	if *logger != "stdout" && *logger != "syslog" {
+		log.Fatalf("Unknown logger '%s' specified", *logger)
+	}
+	if *logger == "syslog" {
+		log_writer, err := syslog.New(syslog.LOG_ERR, "sshauth")
+		if err != nil {
+			log.Fatal("Unable to set syslog as log system", err)
+		}
+		log.SetOutput(log_writer)
+	}
+
 	if *printSSHLog {
-		fmt.Println(sshlogger)
+		log.Println(sshlogger)
 		os.Exit(0)
 	}
 
 	if *bucket == "" {
-		fmt.Println("S3 bucket is required.")
+		log.Println("S3 bucket is required.")
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	if flag.NArg() != 1 {
-		fmt.Println("Username is required")
+		log.Println("Username is required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -121,7 +141,7 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
 			r <- bytes.NewReader([]byte{})
-			printDbgf("AWS Error(1): Code: %s, Message: %s", awsErr.Code(), awsErr.Message())
+			printDbgf("AWS Error(1) Code: %s, Message: %s", awsErr.Code(), awsErr.Message())
 			return
 		}
 		r <- bytes.NewReader([]byte{})
@@ -220,6 +240,11 @@ func readFlagFile(flagFileName string) {
 	os.Args = newArgs
 }
 
+// Print error message
+func printErr(s ...interface{}) {
+
+}
+
 // printDbgf formats string and call printDbg
 func printDbgf(s string, p ...interface{}) {
 	printDbg(fmt.Sprintf(s, p...))
@@ -228,7 +253,6 @@ func printDbgf(s string, p ...interface{}) {
 // printDbg prints debug messages
 func printDbg(s ...interface{}) {
 	if debug == "true" {
-		fmt.Print(" * ")
-		fmt.Println(s...)
+		log.Print(fmt.Sprintf(" * %v", s...))
 	}
 }
