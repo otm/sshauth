@@ -6,11 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"log/syslog"
 	"os"
 	"os/signal"
 	"path"
-	"strings"
 	"syscall"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -25,78 +26,87 @@ const (
 	// flagFileName is the configuration file used for sshauth
 	flagFileName = "/etc/sshauth/sshauth.conf"
 
-	// debug ("true"/"false") controls debug output
-	debug = "false"
-
 	logheader = "command=\"%s %s %s %s\" "
 )
 
 var (
-	// name of s3 bucket
-	bucket = flag.String("bucket", "", "S3 Bucket name")
+	bucket            = flag.String("bucket", "", "S3 bucket `name`")
+	key               = flag.String("key", "", "S3 bucket `prefix`")
+	region            = flag.String("region", "", "AWS `region`, eg. eu-west-1")
+	authlog           = flag.String("authlog", "", "Set `path` to sshlogger script")
+	syslogEnabled     = flag.Bool("syslog", false, "Enable logging via syslog")
+	printSSHLogger    = flag.Bool("sshlogger", false, "Print sshlogger script to stdout")
+	enableDebugOutput = flag.Bool("debug", false, "Enable debug output")
 
-	// name of s3 key prefix
-	key = flag.String("key", "", "S3 bucket key")
-
-	// aws region to use
-	region = flag.String("region", "", "AWS Region")
-
-	authlog = flag.String("authlog", "", "Path to sshlogger script")
-
-	printSSHLog = flag.Bool("sshlogger", false, "Output sshlogger script")
-
-	// username to authenticate
-	user = ""
+	debug = log.New(ioutil.Discard, " * ", 0)
 
 	svc = s3.New(nil)
-
-	usage = `Usage: sshauth [options] username
-
-Options:
- -bucket             S3 bucket name
- -key                S3 key prefix in bucket
- -region             AWS Region
- -authlog            Log key file with syslog
- -sshlogger          Install sshlogger for sysloging
-
-The final S3 url will be: bucket/prefix/username
-`
 )
 
+func usage() {
+	fmt.Fprintln(os.Stderr, "Usage: sshauth [OPTIONS] <username>\n\nOptions:")
+	flag.PrintDefaults()
+	fmt.Fprintln(os.Stderr, "\nThe final S3 URL will be: bucket/prefix/username")
+}
+
+func usageError(error string) {
+	fmt.Fprintln(os.Stderr, error)
+	usage()
+	os.Exit(1)
+}
+
 func init() {
-	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, usage)
-	}
+	flag.Usage = usage
 }
 
 func main() {
+	log.SetFlags(0)
 	readDefaultFlagFile()
 	flag.Parse()
 
-	if *printSSHLog {
+	// setup normal logger
+	if *syslogEnabled {
+		var err error
+		syslogWriter, err := syslog.New(syslog.LOG_NOTICE, "sshauth")
+		if err != nil {
+			log.Fatalf("unable to initialize sysloger: %v", err)
+		}
+		log.SetOutput(syslogWriter)
+	}
+
+	//
+	if *enableDebugOutput {
+		debug.SetOutput(os.Stderr)
+
+		if *syslogEnabled {
+			syslogWriter, err := syslog.New(syslog.LOG_INFO, "sshauth")
+			if err != nil {
+				log.Fatalf("unable to setup syslogger: %v", err)
+			}
+			debug.SetOutput(syslogWriter)
+		}
+	}
+
+	if *printSSHLogger {
 		fmt.Println(sshlogger)
 		os.Exit(0)
 	}
 
 	if *bucket == "" {
-		fmt.Println("S3 bucket is required.")
-		flag.Usage()
-		os.Exit(1)
+		usageError("Error: S3 bucket is required")
 	}
 
 	if flag.NArg() != 1 {
-		fmt.Println("Username is required")
-		flag.Usage()
-		os.Exit(1)
+		usageError("Error: Username is required")
 	}
 
 	if *region != "" {
 		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region).WithMaxRetries(10)
-		printDbg("Setting region:", defaults.DefaultConfig)
+		debug.Printf("Setting region: %s", *region)
 		svc = s3.New(nil)
 	}
 
-	user = flag.Arg(0)
+	user := flag.Arg(0)
 
 	go listenOnSigpipe()
 
@@ -107,11 +117,11 @@ func listenOnSigpipe() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGPIPE)
 	<-c
-	printDbg("Got SIGPIPE signal")
+	debug.Println("Got SIGPIPE signal")
 }
 
 // readAuthorizedKey reads the authorized keys from S3
-func readAuthorizedKey(bucket, key string, r chan io.Reader) {
+func readAuthorizedKey(bucket, key string, authorizedKeys chan io.Reader) {
 	params := &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -119,55 +129,57 @@ func readAuthorizedKey(bucket, key string, r chan io.Reader) {
 	resp, err := svc.GetObject(params)
 
 	if err != nil {
-		if awsErr, ok := err.(awserr.Error); ok {
-			r <- bytes.NewReader([]byte{})
-			printDbg("AWS Error(1):", awsErr.Code, awsErr.Message)
-			return
+		switch e := err.(type) {
+		case awserr.Error:
+			debug.Printf("unable to get authorized key from S3: %s: %s", e.Code(), e.Message())
+		default:
+			debug.Printf("unable to get authorized key from S3: %v", e)
 		}
-		r <- bytes.NewReader([]byte{})
-		printDbg("Error:", err)
+		authorizedKeys <- bytes.NewReader([]byte{})
+		return
 	}
 
 	if *authlog != "" {
 		outbuf := bytes.NewBufferString(fmt.Sprintf(logheader, *authlog, path.Base(key), bucket, key))
 		outbuf.ReadFrom(resp.Body)
-		r <- outbuf
+		authorizedKeys <- outbuf
 		return
 	}
 
-	r <- resp.Body
+	authorizedKeys <- resp.Body
 }
 
 // printAuthorizedKeys for specified bucket, prefix (key) and user
 // the used path will be bucket/prefix/user/*
-func printAuthorizedKeys(bucket, key, user string) {
-	keys := make(chan io.Reader, 5)
+func printAuthorizedKeys(bucket, authorizedKeysPath, user string) {
+	authorizedKeys := make(chan io.Reader, 5)
 
-	key = strings.TrimSuffix(key, "/") + "/" + user + "/"
+	authorizedKeysPath = path.Join(authorizedKeysPath, user)
+	debug.Printf("listing authorized keys in bucket: %s, path: %s", bucket, authorizedKeysPath)
 
 	params := &s3.ListObjectsInput{
 		Bucket: aws.String(bucket), // Required
-		Prefix: aws.String(key),
+		Prefix: aws.String(authorizedKeysPath),
 	}
 
 	err := svc.ListObjectsPages(params, func(resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
 		for _, content := range resp.Contents {
 			// If it's a root key skip reading it
-			if *content.Key == key {
-				keys <- bytes.NewReader([]byte{})
+			if *content.Key == authorizedKeysPath {
+				authorizedKeys <- bytes.NewReader([]byte{})
 				continue
 			}
-			go readAuthorizedKey(bucket, *content.Key, keys)
+			go readAuthorizedKey(bucket, *content.Key, authorizedKeys)
 		}
 
 		for range resp.Contents {
-			_, err := io.Copy(os.Stdout, <-keys)
+			_, err := io.Copy(os.Stdout, <-authorizedKeys)
 			if err != nil {
 				if err == syscall.EPIPE {
 					// Expected error
 					return false
 				}
-				log.Println("Unable to copy to stdout:", err)
+				log.Println("Unable to copy authorized key to stdout:", err)
 			}
 		}
 
@@ -175,10 +187,12 @@ func printAuthorizedKeys(bucket, key, user string) {
 	})
 
 	if err != nil {
-		if awsErr, ok := err.(awserr.Error); ok {
-			log.Fatal("AWS Error(2):", awsErr.Code, awsErr.Message)
+		switch e := err.(type) {
+		case awserr.Error:
+			log.Fatalf("unable to list authorized keys: %s, message: %s", e.Code(), e.Message())
+		default:
+			log.Fatal("Error:", e)
 		}
-		log.Fatal("Error:", err)
 	}
 }
 
@@ -195,12 +209,12 @@ func readFlagFile(flagFileName string) {
 	flagFile, err := os.Open(flagFileName)
 	if err != nil {
 		dir, _ := os.Getwd()
-		printDbg("Unable to open file: ", flagFileName, ", In folder:", dir)
+		debug.Println("Unable to open file: ", flagFileName, ", In folder:", dir)
 		return
 	}
 	defer flagFile.Close()
 
-	printDbg("Reading flag file:", flagFileName)
+	debug.Println("Reading flag file:", flagFileName)
 
 	var newArgs []string
 	newArgs = append(newArgs, os.Args[0])
@@ -218,12 +232,4 @@ func readFlagFile(flagFileName string) {
 	}
 
 	os.Args = newArgs
-}
-
-// printDbg prints debug messages
-func printDbg(s ...interface{}) {
-	if debug == "true" {
-		fmt.Print(" * ")
-		fmt.Println(s...)
-	}
 }
