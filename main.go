@@ -29,6 +29,11 @@ const (
 	logheader    = "command=\"%s %s %s %s\" "
 )
 
+type s3er interface {
+	GetObject(*s3.GetObjectInput) (*s3.GetObjectOutput, error)
+	ListObjectsPages(*s3.ListObjectsInput, func(p *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool)) error
+}
+
 var (
 	bucket         = flag.String("bucket", "", "S3 bucket `name`")
 	key            = flag.String("key", "", "S3 bucket `prefix`")
@@ -42,7 +47,7 @@ var (
 	info  = log.New(ioutil.Discard, "", 0)
 	debug = log.New(ioutil.Discard, " * ", 0)
 
-	svc = s3.New(nil)
+	svc s3er
 )
 
 func usage() {
@@ -126,8 +131,9 @@ func main() {
 	if *region != "" {
 		defaults.DefaultConfig = defaults.DefaultConfig.WithRegion(*region).WithMaxRetries(10)
 		debug.Printf("Setting region: %s", *region)
-		svc = s3.New(nil)
 	}
+
+	svc = s3.New(nil)
 
 	user := flag.Arg(0)
 
@@ -171,14 +177,23 @@ func readAuthorizedKey(bucket, key string, authorizedKeys chan io.Reader) {
 		return
 	}
 
+	// Make sure that the the string ends with a new line
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		info.Printf("Unable to convert authorized key to byte array: %v", err)
+	}
+	if !bytes.HasSuffix(body, []byte("\n")) {
+		body = append(body, []byte("\n")...)
+	}
+
 	if *authlog != "" {
 		outbuf := bytes.NewBufferString(fmt.Sprintf(logheader, *authlog, path.Base(key), bucket, key))
-		outbuf.ReadFrom(resp.Body)
+		outbuf.Read(body)
 		authorizedKeys <- outbuf
 		return
 	}
 
-	authorizedKeys <- resp.Body
+	authorizedKeys <- bytes.NewBuffer(body)
 }
 
 // printAuthorizedKeys for specified bucket, prefix (key) and user
