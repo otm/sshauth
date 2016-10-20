@@ -181,6 +181,7 @@ func readAuthorizedKey(bucket, key string, authorizedKeys chan io.Reader) {
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		info.Printf("Unable to convert authorized key to byte array: %v", err)
+		authorizedKeys <- bytes.NewReader([]byte{})
 	}
 	if !bytes.HasSuffix(body, []byte("\n")) {
 		body = append(body, []byte("\n")...)
@@ -188,7 +189,11 @@ func readAuthorizedKey(bucket, key string, authorizedKeys chan io.Reader) {
 
 	if *authlog != "" {
 		outbuf := bytes.NewBufferString(fmt.Sprintf(logheader, *authlog, path.Base(key), bucket, key))
-		outbuf.Read(body)
+		_, err := outbuf.Write(body)
+		if err != nil {
+			info.Printf("Unable to write author key to buffer: %v", err)
+			authorizedKeys <- bytes.NewReader([]byte{})
+		}
 		authorizedKeys <- outbuf
 		return
 	}
@@ -212,7 +217,7 @@ func printAuthorizedKeys(bucket, authorizedKeysPath, user string) {
 	err := svc.ListObjectsPages(params, func(resp *s3.ListObjectsOutput, lastPage bool) (shouldContinue bool) {
 		for _, content := range resp.Contents {
 			// If it's a root key skip reading it
-			if *content.Key == authorizedKeysPath {
+			if *content.Key == authorizedKeysPath+"/" {
 				authorizedKeys <- bytes.NewReader([]byte{})
 				continue
 			}
